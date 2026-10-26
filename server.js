@@ -13,6 +13,7 @@ const PORT = process.env.PORT || 3000;
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/api/catalog', (_q, res) => res.json(CATALOG));
 app.get('/api/info', (_q, res) => res.json({ ip: lanIP() }));
+app.get('/healthz', (_q, res) => res.send('ok')); // проверка живости для Render
 
 function lanIP() {
   const ifaces = os.networkInterfaces();
@@ -181,12 +182,9 @@ function broadcastAll(room) {
 }
 
 /* ================= аукцион ================= */
-function checkResolve(room) {
+/* Продажа лота лидеру — вызывается и автоматически, и молотком ведущего */
+function resolveLot(room) {
   const st = room.lotLive;
-  const passed = room.teams.filter(t => st.acts[t.id] === 'passed').length;
-  const allPassed = passed === room.teams.length;
-  const leaderAlone = st.leaderId && room.teams.length - passed === 1 && st.acts[st.leaderId] !== 'passed';
-  if (!allPassed && !leaderAlone) return;
   if (st.leaderId) {
     const team = room.teams.find(t => t.id === st.leaderId);
     const lot = room.lots[room.lotIdx];
@@ -208,6 +206,14 @@ function checkResolve(room) {
     room.lotResult = { type: 'none' };
   }
 }
+/* Авто-продажа: все спасовали ИЛИ лидер остался один */
+function checkResolve(room) {
+  const st = room.lotLive;
+  const passed = room.teams.filter(t => st.acts[t.id] === 'passed').length;
+  const allPassed = passed === room.teams.length;
+  const leaderAlone = st.leaderId && room.teams.length - passed === 1 && st.acts[st.leaderId] !== 'passed';
+  if (allPassed || leaderAlone) resolveLot(room);
+}
 
 /* ================= сокеты ================= */
 const roomOfHost = s => (s.data.host && rooms[s.data.code]) || null;
@@ -222,7 +228,7 @@ const toastTo = (s, msg, kind = 'err') => s.emit('you:toast', { msg, kind });
 function emitByPhase(s, room) {
   if (room.phase === 'lobby') { s.emit('room:lobby', lobbyData(room)); return; }
   s.emit('room:public', pub(room));
-  if (room.phase === 'results' && room.results) s.emit('bench:data', room.results);
+  if (room.phase === 'results' && room.results) s.emit('bench:done', { data: room.results });
 }
 
 io.on('connection', s => {
@@ -254,9 +260,11 @@ io.on('connection', s => {
     room.phase = 'auction'; openLot(room);
     broadcastAll(room);
   });
+  /* Молоток ведущего: продаёт лидеру безусловно */
   s.on('host:bid:forceSell', () => {
-    const room = roomOfHost(s); if (!room || room.phase !== 'auction' || !room.lotLive || room.lotResult || !room.lotLive.leaderId) return;
-    checkResolve(room); broadcastAll(room);
+    const room = roomOfHost(s);
+    if (!room || room.phase !== 'auction' || !room.lotLive || room.lotResult || !room.lotLive.leaderId) return;
+    resolveLot(room); broadcastAll(room);
   });
   s.on('host:dropLot', () => {
     const room = roomOfHost(s); if (!room || room.phase !== 'auction' || !room.lotLive || room.lotResult) return;
@@ -417,8 +425,8 @@ io.on('connection', s => {
 
 server.listen(PORT, () => {
   console.log('==================================');
-  console.log('  🔨 АУКЦИОН v2 — сервер запущен');
-  console.log(`  Экран:   http://localhost:${PORT}`);
+  console.log('  🔨 АУКЦИОН v2.1 — сервер запущен');
+  console.log(`  Экран:    http://localhost:${PORT}`);
   console.log(`  Телефоны: http://${lanIP()}:${PORT}`);
   console.log('==================================');
 });
