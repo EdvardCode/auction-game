@@ -1,0 +1,11 @@
+{
+  "name": "auction-pc-game",
+  "version": "2.0.0",
+  "description": "Аукцион — мультиплеерная игра про сборку ПК",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

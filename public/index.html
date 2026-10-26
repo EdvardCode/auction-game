@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>АУКЦИОН — битва сборок</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔨</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400;600;700;800;900&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<canvas id="fx"></canvas>
+<div class="glow glow-a"></div>
+<div class="glow glow-b"></div>
+
+<main>
+  <!-- МЕНЮ -->
+  <section id="scr-menu" class="screen">
+    <div class="ticker"><div class="ticker-track" id="tickerTrack"></div></div>
+    <div class="menu-wrap">
+      <div class="kicker">Командная игра • 2–6 команд • по 2 игрока • телефоны как пульты</div>
+      <h1 class="game-title">АУКЦИОН</h1>
+      <div class="tagline">Торги. Железо. Адреналин.</div>
+      <p class="setup-desc">Каждая команда получает <b>100 000 ₽</b>. Большой экран ведёт аукцион,
+        а команды с телефонов делают ставки, скупают Авито и ДНС и собирают ПК — одновременно и в любой момент.</p>
+      <div class="menu-grid">
+        <div class="menu-card">
+          <h2>🖥 Я ведущий</h2>
+          <p>Большой экран: аукцион, табло, бенчмарк.</p>
+          <div class="count-row"><span>Команд</span>
+            <div class="count-ctl">
+              <button class="count-btn" id="menuMinus">−</button>
+              <span class="count-num" id="menuCount">2</span>
+              <button class="count-btn" id="menuPlus">+</button>
+            </div>
+          </div>
+          <button class="btn btn-gold btn-big" id="btnCreate">Создать игру</button>
+        </div>
+        <div class="menu-card">
+          <h2>📱 Я игрок</h2>
+          <p>Введите код комнаты с большого экрана.</p>
+          <button class="btn btn-big" id="btnToJoin">Войти по коду</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ВХОД ИГРОКА -->
+  <section id="scr-join" class="screen hidden">
+    <div class="join-panel">
+      <button class="btn btn-sm btn-ghost" id="joinBack">← Назад</button>
+      <h2 class="panel-title">Вход в игру <span id="joinCodeEcho"></span></h2>
+      <input id="joinCodeIn" class="code-in" placeholder="КОД" maxlength="4" autocomplete="off">
+      <button class="btn btn-gold" id="btnFind">Найти игру</button>
+      <div id="joinStep2" class="hidden">
+        <input id="joinName" class="txt-in" placeholder="Ваше имя" maxlength="20">
+        <div class="ph-sec">Вступить в команду</div>
+        <div id="joinTeams"></div>
+        <div class="ph-sec">…или создать свою</div>
+        <input id="newTeamName" class="txt-in" placeholder="Название новой команды" maxlength="24">
+        <button class="btn btn-gold act-btn" id="btnCreateTeam">Создать команду и войти</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ЭКРАН ВЕДУЩЕГО -->
+  <section id="scr-host" class="screen hidden"><div id="hostBody"></div></section>
+
+  <!-- ТЕЛЕФОН -->
+  <section id="scr-phone" class="screen hidden"><div id="phoneBody"></div></section>
+</main>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="shared.js"></script>
+<script src="host.js"></script>
+<script src="player.js"></script>
+<script>
+  window.addEventListener('DOMContentLoaded', async () => {
+    await loadCatalog();
+    fxInit();
+    hostWire();
+    playerWire();
+    const tick = ['🔨 Ставки идут прямо с телефонов', '⚡ Авито: дешевле на 20–45%, но ~30% — брак', '📦 ДНС: новое, с гарантией', '💰 Бюджет команды — 100 000 ₽', '🎲 Кот в мешке — рискнёте?', '🛠 Продать назад — 70% от цены', '🏆 Победит лучший бенчмарк'];
+    $('#tickerTrack').innerHTML = tick.concat(tick).map(t => `<span>${t}</span><span class="tsep">◆</span>`).join('');
+  });
+  // восстановление сессии после перезагрузки/переподключения
+  socket.on('connect', () => {
+    const s = getSession(); if (!s) return;
+    if (s.host) {
+      socket.emit('host:rejoin', { code: s.code }, r => {
+        if (r.ok) { ROLE = 'host'; fetchIp(); } else clearSession();
+      });
+    } else if (s.pid) {
+      socket.emit('player:rejoin', { code: s.code, pid: s.pid }, r => {
+        if (r.ok) { ROLE = 'player'; P.myTeam = r.team; P.code = s.code; showScr('scr-phone'); } else clearSession();
+      });
+    }
+  });
+</script>
+</body>
+</html>
