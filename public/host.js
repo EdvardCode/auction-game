@@ -15,6 +15,15 @@ function hostWire() {
       Sound.play('win');
     });
   };
+  /* Выход ведущего в меню (игра сохраняется, можно вернуться) */
+  document.addEventListener('click', e => {
+    if (e.target.closest('#hbLeave')) {
+      if (confirm('Уйти в меню? Игра сохранится — вернёшься с главного меню.')) {
+        const s = getSession(); if (s) setSession({ ...s, left: true });
+        location.reload();
+      }
+    }
+  });
 }
 
 socket.on('room:lobby', d => {
@@ -49,7 +58,9 @@ function renderHost() {
 function renderHostLobby() {
   const l = H.lobby;
   const port = location.port ? ':' + location.port : '';
-  const url = `${location.protocol}//${H.ip}${port}`;
+  const isLocal = ['localhost', '127.0.0.1'].includes(location.hostname);
+  const url = isLocal ? `${location.protocol}//${H.ip}${port}` : location.origin;
+  const lanUrl = `${location.protocol}//${H.ip}${port}`;
   const canStart = l.teams.length >= 2 && l.teams.every(t => t.players.length > 0);
   $('#hostBody').innerHTML = `
     <div class="host-lobby">
@@ -59,9 +70,10 @@ function renderHostLobby() {
         <div class="hl-url">
           Игроки открывают на телефоне:<br>
           <b>${url}</b><br>
+          ${isLocal ? `нет интернета? локальный адрес: <b>${lanUrl}</b><br>` : ''}
           нажимают «Я игрок» и вводят код выше
         </div>
-        <div class="hl-hint">Телефоны и этот компьютер должны быть в одной сети.</div>
+        <div class="hl-hint">${isLocal ? 'Телефоны и этот компьютер должны быть в одной сети.' : 'Работает через интернет — общая сеть не нужна.'}</div>
       </div>
       <div class="hl-right">
         <div class="count-row">
@@ -81,6 +93,7 @@ function renderHostLobby() {
         </div>
         <button class="btn btn-gold btn-big start-btn" id="hlStart" ${canStart ? '' : 'disabled'}>🔨 Начать игру</button>
         ${!canStart && l.teams.length >= 2 ? '<div class="hl-hint">В каждой команде должен быть хотя бы один игрок.</div>' : ''}
+        <button class="btn btn-ghost hb-leave" id="hbLeave">✕ Выйти в меню</button>
       </div>
     </div>`;
   $('#hlMinus').onclick = () => socket.emit('host:setMax', { maxTeams: l.maxTeams - 1 });
@@ -112,13 +125,13 @@ function renderHostGame() {
       <div class="lot-ic mystery">${icon('box')}</div>
       <h2 class="lot-name">Кот в мешке</h2>
       <div class="lot-sub">Внутри — случайный б/у ${CAT_RU_A[lot.catHint]}. Без проверки.</div>`
-      : `<div class="lot-kicker">ЛОТ ${p.lotIdx + 1}/${p.lotsCount}</div>` + lot.items.map(({ cat, id }) => {
+      : `<div class="lot-kicker">ЛОТ ${p.lotIdx + 1}/${p.lotsCount}${lot.kind === 'bundle' ? ' • КОМПЛЕКТ 2-В-1' : ''}</div>` + lot.items.map(({ cat, id }) => {
         const s = byId(cat, id);
         return `<div class="lot-ic">${icon(cat)}</div>
           <h2 class="lot-name">${s.name}</h2>
           <div class="lot-sub">${CAT_RU[cat]} • новое, с гарантией</div>
           <div class="lot-chips">${specChips(cat, s).map(c => `<span class="chip-spec">${c}</span>`).join('')}</div>`;
-      }).join('');
+      }).join('') + (lot.kind === 'bundle' ? '<div class="lot-sub">Комплект: обе детали уходят победителю сразу, одной ставкой</div>' : '');
     lotCard = `<div class="lot-card">${inner}
       <div class="lot-retail">${lot.retail ? `Новый в ДНС: <b>${fmt(lot.retail)} ₽</b> • ` : ''}Старт: <b>${fmt(lot.start)} ₽</b> • шаг: <b>${fmt(lot.step)} ₽</b></div>
     </div>`;
@@ -155,6 +168,7 @@ function renderHostGame() {
   } else {
     bar = `<button class="btn btn-gold btn-big" id="hbClose">Завершить торги ▸</button>`;
   }
+  bar += `<button class="btn btn-ghost hb-leave" id="hbLeave">✕ Выйти</button>`;
 
   $('#hostBody').innerHTML = `
     <div class="hg-progress"><div class="hg-fill" style="width:${Math.min(100, (p.lotIdx + (res ? 1 : 0)) / p.lotsCount * 100)}%"></div></div>
@@ -199,6 +213,7 @@ function renderClosed() {
       <p class="closed-sub">Рынок (Авито и ДНС) ещё открыт на телефонах — команды успевают докупить детали и собрать ПК.</p>
       <div class="hg-board panel closed-board"><div class="hp-label">Табло сборок</div>${board}</div>
       <button class="btn btn-gold btn-big" id="hbBench">🏁 ЗАПУСТИТЬ БЕНЧМАРК</button>
+      <button class="btn btn-ghost hb-leave" id="hbLeave">✕ Выйти в меню</button>
     </div>`;
   $('#hbBench').onclick = () => { socket.emit('host:startBench'); Sound.play('win'); };
 }
@@ -254,7 +269,7 @@ function addBoardRow(r, score) {
 }
 function showResultsHost(data) {
   const sorted = [...data].sort((a, b) => b.score - a.score);
-  const w = sorted[0], medals = ['🥇', '🥈', '🥉'];
+  const w = sorted[0], medals = ['🥇', '🥈', ''];
   const podium = sorted.slice(0, 3);
   const disp = [podium[1], podium[0], podium[2]].filter(Boolean);
   const by = fn => [...sorted].sort((a, b) => fn(b) - fn(a))[0];
@@ -283,6 +298,7 @@ function showResultsHost(data) {
       ${sorted.slice(3).map((p, i) => `<div class="res-row"><span>${i + 4}. ${p.name}</span><b>${p.score} б.</b></div>`).join('')}
       <div class="noms">${noms.map(o => `<span class="nom-chip">${o}</span>`).join('')}</div>
       <button class="btn btn-gold btn-big" id="hbRestart">Играть снова</button>
+      <button class="btn btn-ghost hb-leave" id="hbLeave">✕ Выйти в меню</button>
     </div>`;
   $('#hbRestart').onclick = () => { socket.emit('host:restart'); H.cinema = false; };
   Sound.play('win');
