@@ -26,6 +26,14 @@
       <div class="tagline">Торги. Железо. Адреналин.</div>
       <p class="setup-desc">Каждая команда получает <b>100 000 ₽</b>. Большой экран ведёт аукцион,
         а команды с телефонов делают ставки, скупают Авито и ДНС и собирают ПК — одновременно и в любой момент.</p>
+      <div class="menu-card hidden" id="returnCard" style="margin:18px 0">
+        <h2>↩ Недоигранная игра</h2>
+        <p id="returnInfo"></p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn btn-gold" id="btnReturn">Вернуться в игру</button>
+          <button class="btn btn-ghost" id="btnForget">Забыть</button>
+        </div>
+      </div>
       <div class="menu-grid">
         <div class="menu-card">
           <h2>🖥 Я ведущий</h2>
@@ -86,12 +94,35 @@
     fxInit();
     hostWire();
     playerWire();
+    renderReturnCard();
     const tick = ['🔨 Ставки идут прямо с телефонов', '⚡ Авито: дешевле на 20–45%, но ~30% — брак', '📦 ДНС: новое, с гарантией', '💰 Бюджет команды — 100 000 ₽', '🎲 Кот в мешке — рискнёте?', '🛠 Продать назад — 70% от цены', '🏆 Победит лучший бенчмарк'];
     $('#tickerTrack').innerHTML = tick.concat(tick).map(t => `<span>${t}</span><span class="tsep">◆</span>`).join('');
   });
-  // восстановление сессии после перезагрузки/переподключения
+
+  /* карточка «вернуться в недоигранную игру» */
+  function renderReturnCard() {
+    const s = getSession(), el = $('#returnCard');
+    if (!s || !s.left) { el.classList.add('hidden'); return; }
+    el.classList.remove('hidden');
+    $('#returnInfo').textContent = `Игра ${s.code} — вы были ${s.host ? 'ведущим' : 'игроком'}`;
+    $('#btnReturn').onclick = () => {
+      setSession({ ...s, left: false });
+      if (s.host) {
+        socket.emit('host:rejoin', { code: s.code }, r => {
+          if (r.ok) { ROLE = 'host'; fetchIp(); } else { clearSession(); renderReturnCard(); toast('Игра больше не существует', 'err'); }
+        });
+      } else {
+        socket.emit('player:rejoin', { code: s.code, pid: s.pid }, r => {
+          if (r.ok) { ROLE = 'player'; P.myTeam = r.team; P.code = s.code; } else { clearSession(); renderReturnCard(); toast('Игра больше не существует', 'err'); }
+        });
+      }
+    };
+    $('#btnForget').onclick = () => { clearSession(); renderReturnCard(); };
+  }
+
+  /* восстановление сессии после перезагрузки/обрыва связи */
   socket.on('connect', () => {
-    const s = getSession(); if (!s) return;
+    const s = getSession(); if (!s || s.left) return;
     if (s.host) {
       socket.emit('host:rejoin', { code: s.code }, r => {
         if (r.ok) { ROLE = 'host'; fetchIp(); } else clearSession();
