@@ -2,12 +2,29 @@
 /* ================= ТЕЛЕФОН КОМАНДЫ ================= */
 const P = { code: null, myTeam: null, lobby: null, pub: null, you: null, tab: 'torgi', pickSlot: null, results: null, benchFallback: null };
 
+/* индикатор связи */
+function updateConn(on) { const d = $('#connDot'); if (d) d.classList.toggle('on', on); }
+socket.on('connect', () => updateConn(true));
+socket.on('disconnect', () => {
+  updateConn(false);
+  if (ROLE === 'player') toast('Нет связи с сервером — переподключаемся…', 'err');
+});
+
+/* Выход игрока: работает через делегирование, т.к. кнопка появляется динамически */
+document.addEventListener('click', e => {
+  if (e.target.closest('#btnLeave')) {
+    if (confirm('Выйти из игры? Вернуться можно будет с главного меню.')) {
+      const s = getSession(); if (s) setSession({ ...s, left: true });
+      location.reload();
+    }
+  }
+});
+
 function playerWire() {
   $('#btnToJoin').onclick = () => { showScr('scr-join'); };
   $('#joinBack').onclick = () => showScr('scr-menu');
   $('#btnFind').onclick = probeRoom;
   $('#joinCodeIn').addEventListener('keydown', e => { if (e.key === 'Enter') probeRoom(); });
-  $('#btnLeave').onclick = () => { clearSession(); location.reload(); };
 }
 function probeRoom() {
   const code = $('#joinCodeIn').value.toUpperCase().trim();
@@ -66,18 +83,24 @@ socket.on('bench:done', d => {
   if (me && d.data.every(x => x.score <= me.score) && me.score > 0 && navigator.vibrate) navigator.vibrate([120, 60, 120]);
 });
 socket.on('sfx:bid', () => Sound.play('tick'));
-// страховка, если ведущий не досмотрел кинематограф
-setInterval(() => { if (ROLE === 'player' && P.waitBench) { P.benchFallback = (P.benchFallback || 0) + 1; if (P.benchFallback > 9) { P.waitBench = false; P.results = null; renderPhone(); } } }, 5000);
+/* страховка, если ведущий не досмотрел кинематограф */
+setInterval(() => {
+  if (ROLE === 'player' && P.waitBench) {
+    P.benchFallback = (P.benchFallback || 0) + 1;
+    if (P.benchFallback > 9) { P.waitBench = false; P.results = null; renderPhone(); }
+  }
+}, 5000);
 
 /* ---------- рендер ---------- */
+function setPhoneHtml(root, html) { root.innerHTML = html; updateConn(socket.connected); }
 function renderPhone() {
   const root = $('#phoneBody');
   if (ROLE !== 'player') return;
   const phase = P.pub ? P.pub.phase : 'lobby';
-  if (phase === 'lobby') { root.innerHTML = phoneLobbyHtml(); return; }
-  if (phase === 'results') { root.innerHTML = P.results ? phoneResultsHtml() : phoneWaitHtml(); return; }
-  if (!P.you) { root.innerHTML = '<div class="ph-note">Загрузка…</div>'; return; }
-  root.innerHTML = appShell();
+  if (phase === 'lobby') { setPhoneHtml(root, phoneLobbyHtml()); return; }
+  if (phase === 'results') { setPhoneHtml(root, P.results ? phoneResultsHtml() : phoneWaitHtml()); return; }
+  if (!P.you) { setPhoneHtml(root, '<div class="ph-note">Загрузка…</div>'); return; }
+  setPhoneHtml(root, appShell());
   renderTab();
   $$('.ph-tabs button').forEach(b => b.onclick = () => {
     P.tab = b.dataset.tab; P.pickSlot = null;
@@ -88,6 +111,7 @@ function phoneLobbyHtml() {
   const l = P.lobby || { code: P.code, teams: [] };
   const mine = l.teams.find(t => P.myTeam && t.id === P.myTeam.id);
   return `<div class="ph-shell"><div class="ph-top" style="--tc:${P.myTeam ? P.myTeam.color : '#888'}">
+      <span class="conn-dot" id="connDot"></span>
       <span class="ph-code">${l.code}</span><b>${P.myTeam ? P.myTeam.name : ''}</b>
     </div>
     <div class="ph-body">
@@ -119,8 +143,10 @@ function appShell() {
   const my = P.pub.teams.find(t => t.id === P.you.teamId);
   return `<div class="ph-shell">
     <div class="ph-top" style="--tc:${my.color}">
+      <span class="conn-dot" id="connDot"></span>
       <span class="ph-code">${P.pub.code}</span><b>${my.name}</b>
       <span class="ph-money">${fmt(P.you.money)} ₽</span>
+      <button class="ph-leave" id="btnLeave">Выйти</button>
     </div>
     <div class="ph-body" id="phTabBody"></div>
     <nav class="ph-tabs">
@@ -176,6 +202,7 @@ function renderTorgi(body) {
   const can = !isLeader && myAct.status !== 'passed' && P.you.money >= amount;
   body.innerHTML = `
     <div class="mcard lot-card-ph">${lotInfo}</div>
+    ${lot.kind === 'bundle' ? '<div class="ph-note warn">📦 Комплект: обе детали продаются одним лотом</div>' : ''}
     <div class="ph-price-row"><span class="ph-price">${fmt(lot.price)} ₽</span>
       <span class="dim">${lot.leaderId ? 'лидер: ' + p.teams.find(t => t.id === lot.leaderId).name : 'ставок нет'}</span></div>
     <div class="ph-acts">${lot.acts.map(a => {
