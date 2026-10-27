@@ -1,6 +1,10 @@
 'use strict';
 /* ================= БОЛЬШОЙ ЭКРАН (ведущий) ================= */
 const H = { code: null, ip: '', maxTeams: 2, lobby: null, pub: null, bench: null, cinema: false };
+/* Секторы колеса. ДОЛЖНО совпадать с WHEEL в server.js */
+const WHEEL_SEGS = [0, 1, 0, 2, 0, 1, 3, 1];
+const WHEEL_COLORS = { 0: '#3a2530', 1: '#20303f', 2: '#1d3a33', 3: '#3f331a' };
+let wheelRot = 0, wheelBusy = false;
 
 async function fetchIp() { try { H.ip = (await (await fetch('/api/info')).json()).ip; } catch { H.ip = location.hostname; } }
 
@@ -15,7 +19,6 @@ function hostWire() {
       Sound.play('win');
     });
   };
-  /* Выход ведущего в меню (игра сохраняется, можно вернуться) */
   document.addEventListener('click', e => {
     if (e.target.closest('#hbLeave')) {
       if (confirm('Уйти в меню? Игра сохранится — вернёшься с главного меню.')) {
@@ -34,7 +37,8 @@ socket.on('room:lobby', d => {
 socket.on('room:public', d => {
   if (ROLE !== 'host') return;
   H.pub = d;
-  if (d.phase === 'results') return; // бенчмарк рисуется отдельно
+  if (d.phase === 'results') return;
+  if (wheelBusy) return; // не перерисовываем экран посреди вращения колеса
   showScr('scr-host'); renderHost();
 });
 socket.on('bench:data', d => {
@@ -48,6 +52,22 @@ socket.on('bench:done', d => {
   showResultsHost(d.data);
 });
 socket.on('sfx:bid', () => Sound.play('bid'));
+
+/* вращение колеса: сервер уже выбрал сектор, крутим и сообщаем о остановке */
+socket.on('wheel:spin', d => {
+  wheelBusy = true;
+  const svg = $('#wheelSvg');
+  const finish = () => { wheelBusy = false; socket.emit('host:spinDone'); };
+  if (!svg) { finish(); return; }
+  const target = (360 - (d.index * 45 + 22.5)) % 360;
+  const delta = (target - (wheelRot % 360) + 360) % 360;
+  wheelRot += 360 * 5 + delta;
+  svg.style.transition = 'transform 4.2s cubic-bezier(.12,.8,.16,1)';
+  svg.style.transform = `rotate(${wheelRot}deg)`;
+  const done = () => { svg.removeEventListener('transitionend', done); finish(); };
+  svg.addEventListener('transitionend', done);
+  setTimeout(() => { if (wheelBusy) finish(); }, 5200); // страховка
+});
 
 function renderHost() {
   if (H.lobby && (!H.pub || H.pub.phase === 'lobby')) renderHostLobby();
@@ -101,6 +121,52 @@ function renderHostLobby() {
   $('#hlStart').onclick = () => { socket.emit('host:start'); Sound.play('win'); };
 }
 
+/* ---------- колесо и табло (общие блоки) ---------- */
+function wheelSegmentsSvg() {
+  const n = WHEEL_SEGS.length, R = 100, C = 100;
+  let out = '';
+  for (let i = 0; i < n; i++) {
+    const a0 = (i * 360 / n - 90) * Math.PI / 180, a1 = ((i + 1) * 360 / n - 90) * Math.PI / 180;
+    const x0 = C + R * Math.cos(a0), y0 = C + R * Math.sin(a0);
+    const x1 = C + R * Math.cos(a1), y1 = C + R * Math.sin(a1);
+    const mid = (i * 360 / n + 180 / n - 90) * Math.PI / 180;
+    const tx = C + R * 0.62 * Math.cos(mid), ty = C + R * 0.62 * Math.sin(mid);
+    out += `<path d="M${C},${C} L${x0.toFixed(2)},${y0.toFixed(2)} A${R},${R} 0 0 1 ${x1.toFixed(2)},${y1.toFixed(2)} Z" fill="${WHEEL_COLORS[WHEEL_SEGS[i]]}" stroke="#0c1118" stroke-width="2"/>`;
+    out += `<text x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" text-anchor="middle" dominant-baseline="middle" class="wheel-lbl m${WHEEL_SEGS[i]}">x${WHEEL_SEGS[i]}</text>`;
+  }
+  return out;
+}
+function wheelPanel(p) {
+  const head = p.spin[0];
+  const headName = head ? p.teams.find(t => t.id === head.teamId).name : null;
+  return `<div class="panel wheel-panel">
+    <div class="hp-label">Колесо фортуны</div>
+    <div class="wheel-wrap">
+      <svg viewBox="0 0 200 200" id="wheelSvg" class="wheel-svg">${wheelSegmentsSvg()}</svg>
+      <div class="wheel-pointer"></div><div class="wheel-hub"></div>
+    </div>
+    <div class="wheel-queue">${p.spin.length ? p.spin.map(q => { const t = p.teams.find(x => x.id === q.teamId); return `<span class="q-chip" style="--tc:${t.color}">${t.name} • ${fmt(q.amount)} ₽</span>`; }).join('') : '<span class="dim" style="font-size:.78rem">Заявок нет — команды подают с телефонов (вкладка «Торги»)</span>'}</div>
+    <button class="btn btn-gold" id="hbSpin" ${head && !wheelBusy ? '' : 'disabled'}>${head ? '🎡 Крутить: ' + headName : '🎡 Очередь пуста'}</button>
+    ${p.lastSpin ? `<div class="wheel-last">Последний: <b style="color:${p.lastSpin.teamColor}">${p.lastSpin.teamName}</b> — x${p.lastSpin.mult} (${fmt(p.lastSpin.amount)} ₽)</div>` : ''}
+  </div>`;
+}
+function boardHtml(p) {
+  return [...p.teams].sort((a, b) => (b.score ?? -1) - (a.score ?? -1)).map(t => `
+    <div class="lb-row" style="--tc:${t.color}">
+      <span class="lb-name">${t.name}</span>
+      <span class="lb-money">${fmt(t.money)} ₽${t.debt ? ` <em class="debt">долг ${fmt(t.debt)}</em>` : ''}</span>
+      <span class="lb-score">${t.score !== null ? t.score + ' б.' : '—'}</span>
+    </div>`).join('');
+}
+function applyWheelRot() {
+  const svg = $('#wheelSvg');
+  if (svg) { svg.style.transition = 'none'; svg.style.transform = `rotate(${wheelRot}deg)`; }
+}
+function wireWheel() {
+  const b = $('#hbSpin');
+  if (b) b.onclick = () => socket.emit('host:spin');
+}
+
 /* ---------- аукцион ---------- */
 function renderHostGame() {
   const p = H.pub; if (!p) return;
@@ -142,13 +208,6 @@ function renderHostGame() {
     </div></div>`;
   }
 
-  const board = [...p.teams].sort((a, b) => (b.score ?? -1) - (a.score ?? -1)).map(t => `
-    <div class="lb-row" style="--tc:${t.color}">
-      <span class="lb-name">${t.name}</span>
-      <span class="lb-money">${fmt(t.money)} ₽</span>
-      <span class="lb-score">${t.score !== null ? t.score + ' б.' : '—'}</span>
-    </div>`).join('');
-
   const acts = lot ? lot.acts.map(a => {
     const t = p.teams.find(x => x.id === a.teamId);
     const stTxt = a.status === 'active' ? (lot.leaderId === a.teamId ? 'Лидер' : 'Ставит') : a.status === 'passed' ? 'Пас' : 'Думает';
@@ -170,20 +229,25 @@ function renderHostGame() {
   }
   bar += `<button class="btn btn-ghost hb-leave" id="hbLeave">✕ Выйти</button>`;
 
+  const leaderHtml = lot && !res
+    ? (lot.leaderId ? `Лидер: <b style="color:${p.teams.find(t => t.id === lot.leaderId).color}">${p.teams.find(t => t.id === lot.leaderId).name}</b>` : 'Ставок пока нет')
+    : '';
+
   $('#hostBody').innerHTML = `
     <div class="hg-progress"><div class="hg-fill" style="width:${Math.min(100, (p.lotIdx + (res ? 1 : 0)) / p.lotsCount * 100)}%"></div></div>
     <div class="host-game">
-      <div class="hg-left">${lotCard}<div class="hg-acts">${acts}</div></div>
+      <div class="hg-left">
+        ${lotCard}
+        ${lot && !res ? `<div class="price-strip">
+          <span class="price-now sm">${fmt(lot.price)} ₽</span>
+          <span class="leader-line">${leaderHtml}</span>
+          <span class="dim" style="font-size:.75rem">шаг ${fmt(lot.step)} ₽</span>
+        </div>` : ''}
+        <div class="hg-acts">${acts}</div>
+      </div>
       <div class="hg-right">
-        <div class="hg-price panel">
-          ${lot && !res ? `
-            <div class="hp-label">Текущая ставка</div>
-            <div class="price-now">${fmt(lot.price)} ₽</div>
-            <div class="leader-line">${lot.leaderId ? `Лидер: <b style="color:${p.teams.find(t => t.id === lot.leaderId).color}">${p.teams.find(t => t.id === lot.leaderId).name}</b>` : 'Ставок пока нет'}</div>
-            <div class="hp-hint">Ставки — на телефонах команд. Лот продаётся, когда все соперники спасовали.</div>`
-          : '<div class="hp-label">Рынок открыт на телефонах команд</div>'}
-        </div>
-        <div class="hg-board panel"><div class="hp-label">Табло сборок</div>${board}</div>
+        ${wheelPanel(p)}
+        <div class="hg-board panel"><div class="hp-label">Табло сборок</div>${boardHtml(p)}</div>
       </div>
     </div>
     <div class="host-bar">
@@ -191,6 +255,8 @@ function renderHostGame() {
       <span class="bar-info">Лот ${Math.min(p.lotIdx + 1, p.lotsCount)}/${p.lotsCount}</span>
     </div>`;
 
+  applyWheelRot();
+  wireWheel();
   const q = id => document.getElementById(id);
   if (q('hbNext')) q('hbNext').onclick = () => { socket.emit('host:nextLot'); Sound.play('click'); };
   if (q('hbSell')) q('hbSell').onclick = () => { socket.emit('host:bid:forceSell'); Sound.play('click'); };
@@ -201,20 +267,19 @@ function renderHostGame() {
 
 function renderClosed() {
   const p = H.pub;
-  const board = [...p.teams].sort((a, b) => (b.score ?? -1) - (a.score ?? -1)).map(t => `
-    <div class="lb-row" style="--tc:${t.color}">
-      <span class="lb-name">${t.name}</span>
-      <span class="lb-money">${fmt(t.money)} ₽</span>
-      <span class="lb-score">${t.score !== null ? t.score + ' б.' : '—'}</span>
-    </div>`).join('');
   $('#hostBody').innerHTML = `
-    <div class="closed-wrap">
+    <div class="closed-wrap wide">
       <div class="stamp">ТОРГИ ЗАВЕРШЕНЫ</div>
-      <p class="closed-sub">Рынок (Авито и ДНС) ещё открыт на телефонах — команды успевают докупить детали и собрать ПК.</p>
-      <div class="hg-board panel closed-board"><div class="hp-label">Табло сборок</div>${board}</div>
+      <p class="closed-sub">Рынок, кредиты и колесо ещё работают на телефонах. Команды докупают детали и собирают ПК — затем бенчмарк и списание долгов.</p>
+      <div class="closed-grid">
+        ${wheelPanel(p)}
+        <div class="hg-board panel"><div class="hp-label">Табло сборок</div>${boardHtml(p)}</div>
+      </div>
       <button class="btn btn-gold btn-big" id="hbBench">🏁 ЗАПУСТИТЬ БЕНЧМАРК</button>
       <button class="btn btn-ghost hb-leave" id="hbLeave">✕ Выйти в меню</button>
     </div>`;
+  applyWheelRot();
+  wireWheel();
   $('#hbBench').onclick = () => { socket.emit('host:startBench'); Sound.play('win'); };
 }
 
@@ -223,7 +288,7 @@ async function runCinematic(order) {
   $('#hostBody').innerHTML = `
     <div class="bench-wrap">
       <h1 class="bench-title">БЕНЧМАРК</h1>
-      <p class="bench-sub">Финальный прогон. Железо против железа.</p>
+      <p class="bench-sub">Финальный прогон. Железо против железа. Долги списываются сейчас.</p>
       <div class="bench-body"><div id="runArea"></div><div class="board"><h4>Табло</h4><div id="boardRows"></div></div></div>
     </div>`;
   for (const r of order) { await runOne(r); await sleep(700); }
@@ -234,6 +299,7 @@ async function runOne(r) {
   $('#runArea').innerHTML = `<div class="run-card" style="--tc:${r.color}">
     <div class="run-top"><b class="run-name">${r.name}</b><span class="run-players">${r.players.join(' • ')}</span></div>
     <div class="run-specs">${specs}</div>
+    ${r.debt ? `<div class="loan-line">Кредит: возвращено ${fmt(r.debt)} ₽${r.loanPenalty ? ` — не хватило денег, −${r.loanPenalty} б. к счёту` : ' — долгов не осталось'}</div>` : ''}
     <div class="run-bar"><div class="run-fill" id="runFill"></div></div>
     <div class="run-line"><span class="run-phase" id="runPhase">Инициализация стенда…</span><span class="run-score" id="runScore"></span></div>
   </div>`;
@@ -243,8 +309,8 @@ async function runOne(r) {
     await sleep(1300);
     fill.classList.add('fail');
     ph.innerHTML = `<span class="bad-t">СБОЙ: ${r.reason}</span>`;
-    sc.textContent = '0 баллов'; Sound.play('fail');
-    addBoardRow(r, 0); return;
+    sc.textContent = r.score + ' баллов'; Sound.play('fail');
+    addBoardRow(r, r.score); return;
   }
   const phases = ['Синтетика: процессор…', 'Синтетика: память…', 'Рендер 3D-сцены…', 'Трассировка лучей…', 'Финальный подсчёт…'];
   for (let i = 0; i < phases.length; i++) {
@@ -278,6 +344,7 @@ function showResultsHost(data) {
   const h = by(x => x.stats.auction); if (h.stats.auction > 0) noms.push(`🔨 Молот торгов — ${h.name} (${h.stats.auction} лотов)`);
   const l = by(x => x.stats.avito - x.stats.avitoBad);
   if (l.stats.avito - l.stats.avitoBad > 0) noms.push(`😎 Рисковый — ${l.name} (${l.stats.avito - l.stats.avitoBad} рабочих б/у деталей)`);
+  const g = by(x => x.loanPenalty); if (g.loanPenalty > 0) noms.push(`🏦 Должник — ${g.name} (−${g.loanPenalty} б. за кредиты)`);
   $('#hostBody').innerHTML = `
     <div class="results-wrap">
       <div class="res-banner" style="--tc:${w.color}">
@@ -292,7 +359,7 @@ function showResultsHost(data) {
           <b class="pod-name">${p.name}</b>
           <div class="pod-score">${p.score}</div>
           <small>${p.players.join(' • ')}</small>
-          <small class="dim">остаток ${fmt(p.money)} ₽</small>
+          <small class="dim">${p.loanPenalty ? `кредит −${p.loanPenalty} б. • ` : ''}остаток ${fmt(p.money)} ₽</small>
         </div>`;
       }).join('')}</div>
       ${sorted.slice(3).map((p, i) => `<div class="res-row"><span>${i + 4}. ${p.name}</span><b>${p.score} б.</b></div>`).join('')}
