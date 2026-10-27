@@ -122,13 +122,21 @@ function phoneLobbyHtml() {
     </div></div>`;
 }
 function phoneWaitHtml() {
-  return `<div class="ph-shell"><div class="ph-body">
-    <div class="wait-card"><div class="wait-dots"><span></span><span></span><span></span></div>
-    <h3>Идёт бенчмарк!</h3><p>Смотрите на большой экран 🖥</p></div></div></div>`;
+  return `<div class="ph-shell"><div class="ph-top" style="--tc:${P.myTeam ? P.myTeam.color : '#888'}">
+      <span class="conn-dot" id="connDot"></span><b>Бенчмарк</b>
+      <button class="ph-leave" id="btnLeave">Выйти</button>
+    </div>
+    <div class="ph-body">
+      <div class="wait-card"><div class="wait-dots"><span></span><span></span><span></span></div>
+      <h3>Идёт бенчмарк!</h3><p>Смотрите на большой экран 🖥</p></div>
+    </div></div>`;
 }
 function phoneResultsHtml() {
   const sorted = [...P.results].sort((a, b) => b.score - a.score);
-  return `<div class="ph-shell"><div class="ph-top" style="--tc:${P.myTeam.color}"><b>Результаты</b></div>
+  return `<div class="ph-shell"><div class="ph-top" style="--tc:${P.myTeam.color}">
+      <span class="conn-dot" id="connDot"></span><b>Результаты</b>
+      <button class="ph-leave" id="btnLeave">Выйти</button>
+    </div>
     <div class="ph-body">${sorted.map((r, i) => `
       <div class="ph-res ${r.teamId === P.myTeam.id ? 'me' : ''}" style="--tc:${r.color}">
         <span class="ph-place">${i + 1}</span><b>${r.name}</b>
