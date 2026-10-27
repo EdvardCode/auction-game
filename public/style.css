@@ -211,7 +211,7 @@ main{position:relative;z-index:1}
 .conn-dot{width:9px;height:9px;border-radius:50%;background:var(--red);flex-shrink:0}
 .conn-dot.on{background:var(--teal);box-shadow:0 0 8px var(--teal)}
 .ph-body{flex:1;overflow:auto;padding:12px 12px 90px}
-.ph-tabs{position:fixed;bottom:0;left:0;right:0;display:grid;grid-template-columns:repeat(4,1fr);background:#0d131c;border-top:1px solid var(--line);padding:6px 6px calc(6px + env(safe-area-inset-bottom));z-index:20}
+.ph-tabs{position:fixed;bottom:0;left:0;right:0;display:grid;grid-template-columns:repeat(5,1fr);background:#0d131c;border-top:1px solid var(--line);padding:6px 6px calc(6px + env(safe-area-inset-bottom));z-index:20}
 .ph-tabs button{display:grid;justify-items:center;gap:2px;padding:.5rem .2rem;background:none;border:1px solid transparent;border-radius:10px;color:var(--dim);font:700 .72rem var(--body);cursor:pointer}
 .ph-tabs button .ti{font-size:1.25rem}
 .ph-tabs button.on{color:var(--gold);background:rgba(245,185,66,.08);border-color:rgba(245,185,66,.3)}
@@ -261,6 +261,37 @@ main{position:relative;z-index:1}
 .warn-line{font-size:.78rem;font-weight:600}
 .warn-line.err{color:var(--red)}
 .warn-line.warn{color:var(--gold)}
+
+/* ============ колесо фортуны ============ */
+.wheel-panel{display:grid;gap:10px;justify-items:center}
+.wheel-panel .btn{width:100%}
+.wheel-wrap{position:relative;width:min(250px,58vw)}
+.wheel-svg{width:100%;display:block;transform-origin:50% 50%}
+.wheel-lbl{font:800 13px var(--mono);fill:#dfe8f2}
+.wheel-lbl.m0{fill:#ff8a8a}
+.wheel-lbl.m1{fill:#9fb4c8}
+.wheel-lbl.m2{fill:#5ee6c0}
+.wheel-lbl.m3{fill:#ffd071}
+.wheel-pointer{position:absolute;top:-6px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:10px solid transparent;border-right:10px solid transparent;border-top:16px solid var(--gold);filter:drop-shadow(0 2px 4px rgba(0,0,0,.5));z-index:2}
+.wheel-hub{position:absolute;top:50%;left:50%;width:26px;height:26px;transform:translate(-50%,-50%);background:#0c1118;border:3px solid var(--gold);border-radius:50%;z-index:1}
+.wheel-queue{display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
+.q-chip{font:700 .74rem var(--mono);color:var(--tc);border:1px solid var(--tc);border-radius:14px;padding:.2rem .6rem}
+.wheel-last{font-size:.8rem;color:var(--mut)}
+.debt{color:var(--red);font-style:normal;font-size:.7rem}
+.price-strip{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 14px}
+.price-now.sm{font-size:1.7rem}
+.closed-wrap.wide{max-width:1000px}
+.closed-grid{display:grid;grid-template-columns:minmax(260px,340px) 1fr;gap:16px;width:100%;align-items:start}
+
+/* ============ банк, колесо-заявки, обмен ============ */
+.fin-box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;display:grid;gap:8px;margin-bottom:10px}
+.fin-row{font-size:.85rem;font-weight:600}
+.q-chips{display:flex;gap:6px;flex-wrap:wrap}
+.bet-chip.on,.deal-team.on{border-color:var(--gold);color:var(--gold);background:rgba(245,185,66,.08)}
+.deal-card{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--tc);border-radius:10px;padding:10px 12px;margin-bottom:9px;display:grid;gap:7px}
+.deal-line{font-size:.85rem;color:var(--mut)}
+.deal-line b{font-weight:800}
+.loan-line{font-size:.8rem;color:var(--gold);font-weight:700}
 
 /* ============ модалка/тосты ============ */
 .modal-back{position:fixed;inset:0;background:rgba(5,8,12,.74);backdrop-filter:blur(4px);display:grid;place-items:center;z-index:50;animation:fadeIn .2s}
