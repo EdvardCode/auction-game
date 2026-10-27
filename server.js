@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 3000;
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/api/catalog', (_q, res) => res.json(CATALOG));
 app.get('/api/info', (_q, res) => res.json({ ip: lanIP() }));
-app.get('/healthz', (_q, res) => res.send('ok')); // проверка живости для Render
+app.get('/healthz', (_q, res) => res.send('ok'));
 
 function lanIP() {
   const ifaces = os.networkInterfaces();
@@ -34,6 +34,9 @@ const TEAM_COLORS = ['#ffb43a', '#43c6f0', '#ff6b9d', '#7ee787', '#c9a0ff', '#ff
 const CATS = ['cpu', 'gpu', 'mb', 'ram', 'storage', 'psu', 'cooler', 'case'];
 const REQUIRED = ['cpu', 'mb', 'ram', 'gpu', 'storage', 'psu'];
 const emptyPC = () => ({ cpu: null, mb: null, ram: null, gpu: null, storage: null, psu: null, cooler: null, case: null });
+/* Колесо: множители по секторам. ДОЛЖНО совпадать с WHEEL_SEGS в host.js */
+const WHEEL = [0, 1, 0, 2, 0, 1, 3, 1];
+const LOAN_GET = 20000, LOAN_DEBT = 30000, LOAN_MAX = 2;
 const SELLERS = [
   { n: 'Дмитрий', r: 4.8 }, { n: 'Алексей_77', r: 4.2 }, { n: 'Марина', r: 4.9 },
   { n: 'SeregaHardware', r: 3.6 }, { n: 'Ольга', r: 4.5 }, { n: 'ТоликЖелезо', r: 2.9 },
@@ -83,7 +86,8 @@ function makeCode() { let c; do { c = Array.from({ length: 4 }, () => pick(CODE_
 function createRoom(maxTeams) {
   const room = {
     code: makeCode(), maxTeams, phase: 'lobby', teams: [], players: {},
-    lots: [], lotIdx: 0, lotLive: null, lotResult: null, avito: [], results: null, used: new Set()
+    lots: [], lotIdx: 0, lotLive: null, lotResult: null, avito: [], results: null, used: new Set(),
+    offers: [], spinQueue: [], lastSpin: null, pendingSpin: null
   };
   rooms[room.code] = room;
   for (let i = 0; i < 12; i++) room.avito.push(avitoListing());
@@ -138,6 +142,12 @@ function openLot(room) {
 
 /* ================= снапшоты ================= */
 function pub(room) {
+  const resolveIt = (teamId, u) => {
+    if (!u) return null;
+    const t = room.teams.find(x => x.id === teamId);
+    const it = t && t.inventory.find(y => y.uid === u);
+    return it ? { cat: it.cat, id: it.id } : null;
+  };
   return {
     phase: room.phase, code: room.code,
     lotIdx: room.lotIdx, lotsCount: room.lots.length,
@@ -145,8 +155,15 @@ function pub(room) {
     lotResult: room.lotResult,
     teams: room.teams.map(t => {
       const ev = evaluate(t);
-      return { id: t.id, name: t.name, color: t.color, money: t.money, filled: Object.values(t.pc).filter(Boolean).length, score: ev.boots ? ev.score : null };
+      return {
+        id: t.id, name: t.name, color: t.color, money: t.money, debt: t.debt,
+        filled: Object.values(t.pc).filter(Boolean).length, score: ev.boots ? ev.score : null,
+        inv: t.inventory.map(it => ({ u: it.uid, c: it.cat, i: it.id }))
+      };
     }),
+    offers: room.offers.map(o => ({ id: o.id, from: o.from, to: o.to, gi: resolveIt(o.from, o.gi), gm: o.gm, wi: resolveIt(o.to, o.wi), wm: o.wm })),
+    spin: room.spinQueue.slice(),
+    lastSpin: room.lastSpin,
     avito: room.avito
   };
 }
@@ -161,16 +178,18 @@ function lotPublic(room) {
   else o.items = lot.items.slice();
   return o;
 }
-function priv(t) { return { teamId: t.id, money: t.money, inventory: t.inventory, pc: t.pc }; }
+function priv(t) { return { teamId: t.id, money: t.money, inventory: t.inventory, pc: t.pc, loans: t.loans, debt: t.debt }; }
 function lobbyData(room) {
   return { phase: 'lobby', code: room.code, maxTeams: room.maxTeams, teams: room.teams.map(t => ({ id: t.id, name: t.name, color: t.color, players: t.players.map(p => p.name) })) };
 }
 function benchData(room) {
   return room.teams.map(t => {
     const ev = evaluate(t);
+    const loanPenalty = Math.ceil(Math.max(0, -t.money) / 1000);
+    const score = Math.max(0, (ev.boots ? ev.score : 0) - loanPenalty);
     return {
       teamId: t.id, name: t.name, color: t.color, players: t.players.map(p => p.name), money: t.money,
-      boots: ev.boots, score: ev.boots ? ev.score : 0, reason: ev.reason,
+      boots: ev.boots, score, reason: ev.reason, debt: t.debt, loanPenalty,
       stats: { ...t.stats },
       pc: Object.fromEntries(Object.entries(t.pc).map(([k, it]) => [k, it ? byId(it.cat, it.id).name : null]))
     };
@@ -182,7 +201,6 @@ function broadcastAll(room) {
 }
 
 /* ================= аукцион ================= */
-/* Продажа лота лидеру — вызывается и автоматически, и молотком ведущего */
 function resolveLot(room) {
   const st = room.lotLive;
   if (st.leaderId) {
@@ -206,7 +224,6 @@ function resolveLot(room) {
     room.lotResult = { type: 'none' };
   }
 }
-/* Авто-продажа: все спасовали ИЛИ лидер остался один */
 function checkResolve(room) {
   const st = room.lotLive;
   const passed = room.teams.filter(t => st.acts[t.id] === 'passed').length;
@@ -226,6 +243,12 @@ function teamOf(s) {
 }
 const toastTo = (s, msg, kind = 'err') => s.emit('you:toast', { msg, kind });
 function emitByPhase(s, room) {
+  if (room.pendingSpin) { // ведущий вернулся после обрыва посреди вращения — фиксируем результат
+    const { q, mult } = room.pendingSpin;
+    const team = room.teams.find(t => t.id === q.teamId);
+    if (team) team.money += q.amount * mult;
+    room.pendingSpin = null;
+  }
   if (room.phase === 'lobby') { s.emit('room:lobby', lobbyData(room)); return; }
   s.emit('room:public', pub(room));
   if (room.phase === 'results' && room.results) s.emit('bench:done', { data: room.results });
@@ -254,13 +277,13 @@ io.on('connection', s => {
   s.on('host:start', () => {
     const room = roomOfHost(s); if (!room || room.phase !== 'lobby') return;
     if (room.teams.length < 2 || room.teams.some(t => !t.players.length)) return;
-    room.teams.forEach(t => { t.money = 100000; t.inventory = []; t.pc = emptyPC(); t.stats = { auction: 0, avito: 0, avitoBad: 0 }; });
+    room.teams.forEach(t => { t.money = 100000; t.inventory = []; t.pc = emptyPC(); t.stats = { auction: 0, avito: 0, avitoBad: 0 }; t.debt = 0; t.loans = 0; });
     room.used = new Set(); room.lots = genLots(room); room.lotIdx = 0; room.lotResult = null; room.results = null;
+    room.offers = []; room.spinQueue = []; room.lastSpin = null; room.pendingSpin = null;
     room.avito = []; for (let i = 0; i < 12; i++) room.avito.push(avitoListing());
     room.phase = 'auction'; openLot(room);
     broadcastAll(room);
   });
-  /* Молоток ведущего: продаёт лидеру безусловно */
   s.on('host:bid:forceSell', () => {
     const room = roomOfHost(s);
     if (!room || room.phase !== 'auction' || !room.lotLive || room.lotResult || !room.lotLive.leaderId) return;
@@ -284,6 +307,8 @@ io.on('connection', s => {
   s.on('host:startBench', () => {
     const room = roomOfHost(s); if (!room || (room.phase !== 'closed' && room.phase !== 'auction')) return;
     clearInterval(room.restock);
+    room.teams.forEach(t => { if (t.debt > 0) t.money -= t.debt; }); // возврат кредитов до подсчёта
+    room.offers = []; room.spinQueue = []; room.pendingSpin = null; room.lastSpin = null;
     room.phase = 'results'; room.results = benchData(room);
     io.to('room:' + room.code).emit('bench:data', room.results);
     broadcastAll(room);
@@ -295,10 +320,35 @@ io.on('connection', s => {
   s.on('host:restart', () => {
     const room = roomOfHost(s); if (!room) return;
     room.phase = 'lobby'; room.lots = []; room.lotIdx = 0; room.lotLive = null; room.lotResult = null; room.results = null;
+    room.offers = []; room.spinQueue = []; room.lastSpin = null; room.pendingSpin = null;
     io.to('room:' + room.code).emit('room:lobby', lobbyData(room));
   });
+  /* ---------- колесо ---------- */
+  s.on('host:spin', () => {
+    const room = roomOfHost(s); if (!room) return;
+    if (room.pendingSpin || !room.spinQueue.length) return;
+    const q = room.spinQueue.shift();
+    const index = Math.floor(Math.random() * WHEEL.length);
+    room.pendingSpin = { q, index, mult: WHEEL[index] };
+    io.to('room:' + room.code).emit('wheel:spin', { id: q.id, teamId: q.teamId, amount: q.amount, index, mult: WHEEL[index] });
+  });
+  s.on('host:spinDone', () => {
+    const room = roomOfHost(s); if (!room || !room.pendingSpin) return;
+    const { q, mult } = room.pendingSpin;
+    const team = room.teams.find(t => t.id === q.teamId);
+    if (team) {
+      team.money += q.amount * mult;
+      room.lastSpin = { teamId: team.id, teamName: team.name, teamColor: team.color, amount: q.amount, mult };
+      io.to('team:' + team.id).emit('you:toast', {
+        msg: mult === 0 ? `Колесо: x0 — ставка ${q.amount.toLocaleString('ru-RU')} ₽ сгорела` : `Колесо: x${mult} — +${(q.amount * mult).toLocaleString('ru-RU')} ₽`,
+        kind: mult === 0 ? 'err' : 'ok'
+      });
+    }
+    room.pendingSpin = null;
+    broadcastAll(room);
+  });
 
-  /* ---------- игроки ---------- */
+  /* ---------- игроки: вход ---------- */
   s.on('player:probe', ({ code }, cb) => {
     const room = rooms[(code || '').toUpperCase().trim()];
     if (!room) return cb && cb({ ok: false, err: 'Код не найден' });
@@ -322,7 +372,7 @@ io.on('connection', s => {
       team = {
         id: uid(), name: (createTeam || '').trim().slice(0, 24) || `Команда ${room.teams.length + 1}`,
         color: TEAM_COLORS[room.teams.length % TEAM_COLORS.length], players: [],
-        money: 100000, inventory: [], pc: emptyPC(), stats: { auction: 0, avito: 0, avitoBad: 0 }
+        money: 100000, inventory: [], pc: emptyPC(), stats: { auction: 0, avito: 0, avitoBad: 0 }, debt: 0, loans: 0
       };
       room.teams.push(team);
     }
@@ -345,7 +395,7 @@ io.on('connection', s => {
     if (team && room.phase !== 'lobby') s.emit('you:state', priv(team));
   });
 
-  /* ---------- действия команды ---------- */
+  /* ---------- игроки: торги и рынок ---------- */
   s.on('game:bid', () => {
     const { room, team } = teamOf(s); if (!room || !team) return;
     if (room.phase !== 'auction' || !room.lotLive || room.lotResult) return toastTo(s, 'Сейчас нельзя ставить');
@@ -402,6 +452,7 @@ io.on('connection', s => {
     const sp = round10(it.paid * (it.broken ? .1 : .7));
     Object.keys(team.pc).forEach(k => { if (team.pc[k] && team.pc[k].uid === u) team.pc[k] = null; });
     team.money += sp; team.inventory.splice(idx, 1);
+    room.offers = room.offers.filter(o => o.gi !== u && o.wi !== u); // офферы с проданной деталью умирают
     toastTo(s, `Продано за ${sp.toLocaleString('ru-RU')} ₽`, 'ok');
     broadcastAll(room);
   });
@@ -421,11 +472,98 @@ io.on('connection', s => {
     team.pc[slot] = null;
     broadcastAll(room);
   });
+
+  /* ---------- банк: кредит ---------- */
+  s.on('game:loan', () => {
+    const { room, team } = teamOf(s); if (!room || !team) return;
+    if (room.phase !== 'auction' && room.phase !== 'closed') return toastTo(s, 'Банк закрыт');
+    if (team.loans >= LOAN_MAX) return toastTo(s, `Максимум ${LOAN_MAX} кредита на команду`);
+    team.loans++; team.debt += LOAN_DEBT; team.money += LOAN_GET;
+    toastTo(s, `Кредит получен: +${LOAN_GET.toLocaleString('ru-RU')} ₽ (долг ${LOAN_DEBT.toLocaleString('ru-RU')} ₽)`, 'ok');
+    broadcastAll(room);
+  });
+
+  /* ---------- обмен между командами ---------- */
+  s.on('game:tradeOffer', ({ toTeam, gi, gm, wi, wm }, cb) => {
+    const { room, team } = teamOf(s); if (!room || !team) return cb && cb({ ok: false });
+    if (room.phase !== 'auction' && room.phase !== 'closed') return cb({ ok: false, err: 'Обмен закрыт' });
+    if (!toTeam || toTeam === team.id) return cb({ ok: false, err: 'Выберите другую команду' });
+    const other = room.teams.find(t => t.id === toTeam);
+    if (!other) return cb({ ok: false, err: 'Команда не найдена' });
+    gm = Math.max(0, Math.round(+gm || 0)); wm = Math.max(0, Math.round(+wm || 0));
+    const myItem = gi ? team.inventory.find(x => x.uid === gi) : null;
+    const theirItem = wi ? other.inventory.find(x => x.uid === wi) : null;
+    if (gi && !myItem) return cb({ ok: false, err: 'Ваша деталь не найдена' });
+    if (wi && !theirItem) return cb({ ok: false, err: 'Деталь соперника не найдена' });
+    if (!myItem && gm <= 0) return cb({ ok: false, err: 'Предложите деталь или деньги' });
+    if (!theirItem && wm <= 0) return cb({ ok: false, err: 'Запросите деталь или деньги' });
+    if (gm > team.money) return cb({ ok: false, err: 'Не хватает денег на доплату' });
+    if (wm > other.money) return cb({ ok: false, err: 'У соперника нет такой суммы' });
+    room.offers.push({ id: uid(), from: team.id, to: toTeam, gi: gi || null, gm, wi: wi || null, wm });
+    cb({ ok: true });
+    io.to('team:' + toTeam).emit('you:toast', { msg: `Команда «${team.name}» предлагает обмен`, kind: 'ok' });
+    broadcastAll(room);
+  });
+  s.on('game:tradeAccept', ({ id }) => {
+    const { room, team } = teamOf(s); if (!room || !team) return;
+    const o = room.offers.find(x => x.id === id);
+    if (!o || o.to !== team.id) return;
+    const A = room.teams.find(t => t.id === o.from), B = team;
+    if (!A) return;
+    const itemA = o.gi ? A.inventory.find(x => x.uid === o.gi) : null;
+    const itemB = o.wi ? B.inventory.find(x => x.uid === o.wi) : null;
+    const stale = (o.gi && !itemA) || (o.wi && !itemB) || A.money < o.gm || B.money < o.wm;
+    room.offers = room.offers.filter(x => x.id !== id);
+    if (stale) { toastTo(s, 'Оффер неактуален: детали или деньги изменились'); broadcastAll(room); return; }
+    if (itemA) { Object.keys(A.pc).forEach(k => { if (A.pc[k] && A.pc[k].uid === itemA.uid) A.pc[k] = null; }); A.inventory = A.inventory.filter(x => x.uid !== itemA.uid); B.inventory.push(itemA); }
+    if (itemB) { Object.keys(B.pc).forEach(k => { if (B.pc[k] && B.pc[k].uid === itemB.uid) B.pc[k] = null; }); B.inventory = B.inventory.filter(x => x.uid !== itemB.uid); A.inventory.push(itemB); }
+    A.money -= o.gm; B.money += o.gm;
+    B.money -= o.wm; A.money += o.wm;
+    io.to('team:' + A.id).emit('you:toast', { msg: `Обмен с командой «${B.name}» состоялся`, kind: 'ok' });
+    toastTo(s, `Обмен с командой «${A.name}» состоялся`, 'ok');
+    broadcastAll(room);
+  });
+  s.on('game:tradeDecline', ({ id }) => {
+    const { room, team } = teamOf(s); if (!room) return;
+    const o = room.offers.find(x => x.id === id);
+    if (!o || o.to !== team.id) return;
+    room.offers = room.offers.filter(x => x.id !== id);
+    broadcastAll(room);
+  });
+  s.on('game:tradeCancel', ({ id }) => {
+    const { room, team } = teamOf(s); if (!room) return;
+    const o = room.offers.find(x => x.id === id);
+    if (!o || o.from !== team.id) return;
+    room.offers = room.offers.filter(x => x.id !== id);
+    broadcastAll(room);
+  });
+
+  /* ---------- колесо: заявки команд ---------- */
+  s.on('game:spinRequest', ({ amount }, cb) => {
+    const { room, team } = teamOf(s); if (!room || !team) return cb && cb({ ok: false });
+    if (room.phase !== 'auction' && room.phase !== 'closed') return cb({ ok: false, err: 'Колесо недоступно' });
+    if (room.spinQueue.some(q => q.teamId === team.id)) return cb({ ok: false, err: 'У вас уже есть заявка в очереди' });
+    amount = Math.round(+amount || 0);
+    if (amount < 100) return cb({ ok: false, err: 'Минимальная ставка 100 ₽' });
+    if (amount > team.money) return cb({ ok: false, err: 'Не хватает денег' });
+    team.money -= amount; // ставка холдится сразу
+    room.spinQueue.push({ id: uid(), teamId: team.id, amount });
+    cb({ ok: true });
+    broadcastAll(room);
+  });
+  s.on('game:spinCancel', ({ id }) => {
+    const { room, team } = teamOf(s); if (!room) return;
+    const i = room.spinQueue.findIndex(q => q.id === id && q.teamId === team.id);
+    if (i < 0) return;
+    team.money += room.spinQueue[i].amount;
+    room.spinQueue.splice(i, 1);
+    broadcastAll(room);
+  });
 });
 
 server.listen(PORT, () => {
   console.log('==================================');
-  console.log('  🔨 АУКЦИОН v2.1 — сервер запущен');
+  console.log('  🔨 АУКЦИОН v2.2 — сервер запущен');
   console.log(`  Экран:    http://localhost:${PORT}`);
   console.log(`  Телефоны: http://${lanIP()}:${PORT}`);
   console.log('==================================');
