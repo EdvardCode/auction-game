@@ -1,8 +1,7 @@
 'use strict';
 /* ================= ТЕЛЕФОН КОМАНДЫ ================= */
-const P = { code: null, myTeam: null, lobby: null, pub: null, you: null, tab: 'torgi', pickSlot: null, results: null, benchFallback: null };
+const P = { code: null, myTeam: null, lobby: null, pub: null, you: null, tab: 'torgi', pickSlot: null, results: null, benchFallback: null, dealTo: null };
 
-/* индикатор связи */
 function updateConn(on) { const d = $('#connDot'); if (d) d.classList.toggle('on', on); }
 socket.on('connect', () => updateConn(true));
 socket.on('disconnect', () => {
@@ -10,7 +9,6 @@ socket.on('disconnect', () => {
   if (ROLE === 'player') toast('Нет связи с сервером — переподключаемся…', 'err');
 });
 
-/* Выход игрока: работает через делегирование, т.к. кнопка появляется динамически */
 document.addEventListener('click', e => {
   if (e.target.closest('#btnLeave')) {
     if (confirm('Выйти из игры? Вернуться можно будет с главного меню.')) {
@@ -83,7 +81,6 @@ socket.on('bench:done', d => {
   if (me && d.data.every(x => x.score <= me.score) && me.score > 0 && navigator.vibrate) navigator.vibrate([120, 60, 120]);
 });
 socket.on('sfx:bid', () => Sound.play('tick'));
-/* страховка, если ведущий не досмотрел кинематограф */
 setInterval(() => {
   if (ROLE === 'player' && P.waitBench) {
     P.benchFallback = (P.benchFallback || 0) + 1;
@@ -135,8 +132,9 @@ function phoneResultsHtml() {
     <div class="ph-body">${sorted.map((r, i) => `
       <div class="ph-res ${r.teamId === P.myTeam.id ? 'me' : ''}" style="--tc:${r.color}">
         <span class="ph-place">${i + 1}</span><b>${r.name}</b>
-        <span class="ph-res-score">${r.boots ? r.score + ' б.' : '0 (сбой)'}</span>
-      </div>`).join('')}
+        <span class="ph-res-score">${r.score} б.</span>
+      </div>
+      ${r.loanPenalty ? `<div class="ph-note" style="margin:-4px 0 8px">Кредит съел ${r.loanPenalty} б.</div>` : ''}`).join('')}
     </div></div>`;
 }
 function appShell() {
@@ -153,6 +151,7 @@ function appShell() {
       <button data-tab="torgi" class="${P.tab === 'torgi' ? 'on' : ''}"><span class="ti">🔨</span>Торги</button>
       <button data-tab="avito" class="${P.tab === 'avito' ? 'on' : ''}"><span class="ti">📦</span>Авито</button>
       <button data-tab="dns" class="${P.tab === 'dns' ? 'on' : ''}"><span class="ti">🛒</span>ДНС</button>
+      <button data-tab="deal" class="${P.tab === 'deal' ? 'on' : ''}"><span class="ti">🤝</span>Дил</button>
       <button data-tab="build" class="${P.tab === 'build' ? 'on' : ''}"><span class="ti">🖥</span>Сборка</button>
     </nav>
   </div>`;
@@ -163,25 +162,71 @@ function renderTab() {
   if (P.tab === 'torgi') renderTorgi(body);
   else if (P.tab === 'avito') renderAvito(body);
   else if (P.tab === 'dns') renderDns(body);
+  else if (P.tab === 'deal') renderDeal(body);
   else renderBuild(body);
 }
 
-/* ---------- Торги ---------- */
+/* ---------- Торги + банк + колесо ---------- */
+function financeHtml() {
+  const you = P.you;
+  const myReq = P.pub.spin.find(q => q.teamId === you.teamId);
+  return `
+  <div class="ph-sec">Банк</div>
+  <div class="fin-box">
+    <div class="fin-row">Кредит: +20 000 ₽ сейчас, вернуть 30 000 ₽ в конце игры.</div>
+    <div class="fin-row dim">Взято: ${you.loans}/2${you.debt ? ` • ваш долг: ${fmt(you.debt)} ₽` : ''}</div>
+    <button class="btn act-btn-ghost" id="phLoan" ${you.loans >= 2 ? 'disabled' : ''}>Взять кредит</button>
+  </div>
+  <div class="ph-sec">Колесо фортуны</div>
+  <div class="fin-box">
+    <div class="fin-row dim">Сектора x0 x1 x2 x3. Ставка списывается сразу, выплата — когда ведущий крутит колесо.</div>
+    ${myReq ? `<div class="fin-row">Ваша заявка в очереди: <b>${fmt(myReq.amount)} ₽</b></div>
+      <button class="btn act-btn-ghost" id="phSpinCancel">Отозвать заявку</button>`
+    : `<div class="bid-actions" style="margin:6px 0">
+        <input type="number" class="txt-in" id="phBet" placeholder="Ставка, ₽" min="100" inputmode="numeric">
+        <div class="q-chips">${[1000, 5000, 10000].map(v => `<button class="btn btn-sm bet-chip" data-v="${v}">${fmt(v)}</button>`).join('')}<button class="btn btn-sm bet-chip" data-v="all">Ва-банк</button></div>
+      </div>
+      <button class="btn btn-gold act-btn" id="phSpinReq">🎡 Встать в очередь на спин</button>`}
+    ${P.pub.lastSpin ? `<div class="fin-row dim">Последний на колесе: ${P.pub.lastSpin.teamName} — x${P.pub.lastSpin.mult}</div>` : ''}
+  </div>`;
+}
+function wireFinance() {
+  const loan = $('#phLoan'); if (loan) loan.onclick = () => socket.emit('game:loan');
+  const req = $('#phSpinReq');
+  if (req) req.onclick = () => {
+    const v = Math.round(+$('#phBet').value || 0);
+    socket.emit('game:spinRequest', { amount: v }, r => {
+      if (!r.ok) return toast(r.err || 'Не получилось', 'err');
+      toast('Заявка отправлена ведущему', 'ok');
+    });
+  };
+  const canc = $('#phSpinCancel');
+  if (canc) canc.onclick = () => {
+    const q = P.pub.spin.find(x => x.teamId === P.you.teamId);
+    if (q) socket.emit('game:spinCancel', { id: q.id });
+  };
+  $$('.bet-chip').forEach(b => b.onclick = () => { $('#phBet').value = b.dataset.v === 'all' ? P.you.money : b.dataset.v; });
+}
 function renderTorgi(body) {
   const p = P.pub;
-  if (p.phase === 'closed') { body.innerHTML = '<div class="ph-note">🏁 Торги завершены. Рынок ещё открыт — успейте докупить и собрать ПК!</div>'; return; }
+  if (p.phase === 'closed') {
+    body.innerHTML = '<div class="ph-note">🏁 Торги завершены. Рынок, банк и колесо ещё работают — успейте усилить сборку!</div>' + financeHtml();
+    wireFinance();
+    return;
+  }
   const res = p.lotResult, lot = p.lot;
   if (res) {
-    body.innerHTML = res.type === 'sold' ? `
+    body.innerHTML = (res.type === 'sold' ? `
       <div class="ph-res-card">
         <div class="stamp sm">ПРОДАНО</div>
         <p>за <b>${fmt(res.price)} ₽</b> → <b style="color:${res.teamColor}">${res.teamName}</b></p>
         ${res.items.map(i => `<div class="sold-item">${icon(i.cat)} <b>${i.name}</b>${i.broken ? ' <span class="bad-t">— БРАК!</span>' : ''}</div>`).join('')}
         <p class="dim">Ведущий запускает следующий лот…</p>
-      </div>` : '<div class="ph-res-card"><div class="stamp sm grey">ЛОТ СНЯТ</div><p>Ставок не было.</p></div>';
+      </div>` : '<div class="ph-res-card"><div class="stamp sm grey">ЛОТ СНЯТ</div><p>Ставок не было.</p></div>') + financeHtml();
+    wireFinance();
     return;
   }
-  if (!lot) { body.innerHTML = '<div class="ph-note">Лоты закончились — ждём ведущего.</div>'; return; }
+  if (!lot) { body.innerHTML = '<div class="ph-note">Лоты закончились — ждём ведущего.</div>' + financeHtml(); wireFinance(); return; }
   const lotInfo = lot.kind === 'mystery' ? `
       <div class="m-ic mystery">${icon('box')}</div>
       <div class="m-body"><div class="m-cat" style="color:var(--copper)">Кот в мешке</div>
@@ -217,9 +262,10 @@ function renderTorgi(body) {
       <button class="btn act-btn-ghost" id="phPass" ${myAct.status === 'passed' ? 'disabled' : ''}>
         ${myAct.status === 'passed' ? 'Пас принят' : 'Пас — выйти из торгов за лот'}
       </button>
-    </div>`;
+    </div>` + financeHtml();
   const bid = $('#phBid'); if (bid) bid.onclick = () => { socket.emit('game:bid'); Sound.play('bid'); };
   const pass = $('#phPass'); if (pass) pass.onclick = () => { socket.emit('game:pass'); Sound.play('click'); };
+  wireFinance();
 }
 
 /* ---------- Авито / ДНС ---------- */
@@ -264,7 +310,7 @@ function scanOverlay(r) {
       body.innerHTML = `<div class="test-box"><div class="test-ic">${icon(r.cat)}</div>
         <div class="test-stamp bad-stamp">БРАК</div><h3>Не работает!</h3>
         <div class="test-name">${r.name}</div>
-        <p class="test-sub">Осталось сдать на запчасти во вкладке «Сборка».</p>
+        <p class="test-sub">Осталось сдать на запчасти во вкладке «Сборка» — или впарить соперникам во вкладке «Дил».</p>
         <button class="btn btn-gold" id="btnTake">Понятно</button></div>`;
     } else {
       Sound.play('win');
@@ -297,6 +343,69 @@ function renderDns(body) {
       Sound.play('cash'); toast('Куплено: ' + r.name, 'ok');
     });
   });
+}
+
+/* ---------- Дил: обмен между командами ---------- */
+function offerCard(o, incoming) {
+  const pub = P.pub;
+  const a = pub.teams.find(t => t.id === o.from);
+  const b = pub.teams.find(t => t.id === o.to);
+  const nameOf = pi => pi ? byId(pi.cat, pi.id).name : null;
+  const giveParts = [nameOf(o.gi), o.gm ? fmt(o.gm) + ' ₽' : null].filter(Boolean).join(' + ') || 'ничего';
+  const wantParts = [nameOf(o.wi), o.wm ? fmt(o.wm) + ' ₽' : null].filter(Boolean).join(' + ') || 'ничего';
+  return `<div class="deal-card" style="--tc:${a.color}">
+    <div class="deal-line"><b style="color:${a.color}">${a.name}</b> даёт: ${giveParts}</div>
+    <div class="deal-line"><b style="color:${b.color}">${b.name}</b> даёт: ${wantParts}</div>
+    ${incoming
+      ? `<div class="bid-actions"><button class="btn btn-gold btn-sm" data-acc="${o.id}">Принять</button><button class="btn btn-ghost btn-sm" data-dec="${o.id}">Отклонить</button></div>`
+      : `<button class="btn btn-ghost btn-sm" data-can="${o.id}">Отозвать оффер</button>`}
+  </div>`;
+}
+function dealForm() {
+  const you = P.you, pub = P.pub;
+  const other = pub.teams.find(t => t.id === P.dealTo);
+  return `
+    <div class="fin-row dim">Я отдаю</div>
+    <select class="txt-in" id="dGiveItem"><option value="">— деталь —</option>${you.inventory.map(it => `<option value="${it.uid}">${byId(it.cat, it.id).name}${it.broken ? ' (брак!)' : ''}</option>`).join('')}</select>
+    <input type="number" class="txt-in" id="dGiveMoney" placeholder="+ мои деньги, ₽" min="0" inputmode="numeric">
+    <div class="fin-row dim">Я хочу от «${other.name}»</div>
+    <select class="txt-in" id="dWantItem"><option value="">— деталь —</option>${(other.inv || []).map(it => `<option value="${it.u}">${byId(it.c, it.i).name}</option>`).join('')}</select>
+    <input type="number" class="txt-in" id="dWantMoney" placeholder="+ их деньги, ₽" min="0" inputmode="numeric">
+    <button class="btn btn-gold act-btn" id="dSend">Отправить оффер</button>
+    <div class="fin-row dim">Соперник видит названия ваших деталей, но не их состояние. Брак отдавать можно — покупатель рискует сам.</div>`;
+}
+function renderDeal(body) {
+  const you = P.you, pub = P.pub;
+  const incoming = pub.offers.filter(o => o.to === you.teamId);
+  const outgoing = pub.offers.filter(o => o.from === you.teamId);
+  body.innerHTML = `
+    <div class="ph-sec">Входящие офферы (${incoming.length})</div>
+    ${incoming.length ? incoming.map(o => offerCard(o, true)).join('') : '<div class="ph-note">Входящих офферов нет.</div>'}
+    <div class="ph-sec">Мои офферы (${outgoing.length})</div>
+    ${outgoing.length ? outgoing.map(o => offerCard(o, false)).join('') : '<div class="ph-note">Активных офферов нет.</div>'}
+    <div class="ph-sec">Создать оффер</div>
+    <div class="fin-box">
+      <div class="fin-row dim">Команда-партнёр</div>
+      <div class="q-chips">${pub.teams.filter(t => t.id !== you.teamId).map(t => `<button class="btn btn-sm deal-team ${P.dealTo === t.id ? 'on' : ''}" data-t="${t.id}" style="--tc:${t.color}">${t.name}</button>`).join('')}</div>
+      ${P.dealTo ? dealForm() : '<div class="ph-note">Выберите команду, с которой хотите договориться.</div>'}
+    </div>`;
+  $$('.deal-team').forEach(b => b.onclick = () => { P.dealTo = b.dataset.t; Sound.play('click'); renderPhone(); });
+  $$('[data-acc]').forEach(b => b.onclick = () => { socket.emit('game:tradeAccept', { id: b.dataset.acc }); Sound.play('cash'); });
+  $$('[data-dec]').forEach(b => b.onclick = () => socket.emit('game:tradeDecline', { id: b.dataset.dec }));
+  $$('[data-can]').forEach(b => b.onclick = () => socket.emit('game:tradeCancel', { id: b.dataset.can }));
+  const send = $('#dSend');
+  if (send) send.onclick = () => {
+    socket.emit('game:tradeOffer', {
+      toTeam: P.dealTo,
+      gi: $('#dGiveItem').value || null,
+      gm: +$('#dGiveMoney').value || 0,
+      wi: $('#dWantItem').value || null,
+      wm: +$('#dWantMoney').value || 0
+    }, r => {
+      if (!r.ok) return toast(r.err || 'Не получилось', 'err');
+      toast('Оффер отправлен', 'ok');
+    });
+  };
 }
 
 /* ---------- Сборка ---------- */
